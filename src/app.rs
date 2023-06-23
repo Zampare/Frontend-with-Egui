@@ -1,21 +1,40 @@
+#![forbid(unsafe_code)]
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
+use reqwest::{Client};
+use std::sync::mpsc::{Receiver, Sender};
+use egui_extras::{TableBuilder, Column};
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
     // Example stuff:
-    label: String,
-
-    // this how you opt-out of serialization of a member
     #[serde(skip)]
-    value: f32,
+    tx: Sender<Vec<Lift>>,
+    #[serde(skip)]
+    rx: Receiver<Vec<Lift>>,
+    label: String,
+    lifts: Vec<Lift>,
 }
+
+#[derive(serde::Deserialize,serde::Serialize, Debug, Clone, PartialEq)]
+struct Lift{
+    id:i32,
+    lift: String,
+    weight:i32,
+    reps:i32,
+    rpe:i32,
+    time:chrono::DateTime<chrono::Utc>
+}
+
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
         Self {
             // Example stuff:
+            tx,
+            rx,
+            lifts: Vec::new(),
             label: "Hello World!".to_owned(),
-            value: 2.7,
         }
     }
 }
@@ -36,6 +55,41 @@ impl TemplateApp {
     }
 }
 
+fn get_lifts(tx: Sender<Vec<Lift>>, ctx: egui::Context){
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move{
+        let body: Vec<Lift> = Client::default()
+            .get("http://192.168.1.38:8080/api/workout/lifts")
+            .send()
+            .await
+            .expect("Unable to send request")
+            .json()
+            .await
+            .expect("Unable to parse response");
+
+        // After parsing the response, notify the GUI thread of the increment value.
+        let _ = tx.send(body);
+        ctx.request_repaint();
+    });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(async move {
+        let body: Vec<Lift> = Client::default()
+            .get("http://192.168.1.38:8080/api/workout/lifts")
+            .send()
+            .await
+            .expect("Unable to send request")
+            .json()
+            .await
+            .expect("Unable to parse response");
+
+        // After parsing the response, notify the GUI thread of the increment value.
+        let _ = tx.send(body);
+        ctx.request_repaint();
+    });
+}
+
+
 impl eframe::App for TemplateApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -45,8 +99,9 @@ impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let Self { label, value } = self;
-
+        if let Ok(lifts) = self.rx.try_recv() {
+            self.lifts = lifts;
+        }
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -64,43 +119,54 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("Side Panel");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(label);
-            });
-
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
-            }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("powered by ");
-                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                    ui.label(" and ");
-                    ui.hyperlink_to(
-                        "eframe",
-                        "https://github.com/emilk/egui/tree/master/crates/eframe",
-                    );
-                    ui.label(".");
-                });
-            });
-        });
-
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
+           
+                TableBuilder::new(ui)
+                    .columns(Column::remainder(),5)
+                    .header(20.0, |mut header| {
+                        header.col(|ui| {
+                            ui.heading("Reps");
+                        });
+                        header.col(|ui| {
+                            ui.heading("Weight");
+                        });
+                        header.col(|ui| {
+                            ui.heading("Exercise Type");
+                        });
+                        header.col(|ui| {
+                            ui.heading("Date");
+                        });
+                        header.col(|ui| {
+                            ui.heading("RPE");
+                        });
+                    })
+                    .body(|mut body| {
+                        for lift in &self.lifts {
+                            body.row(30.0, |mut row| {
+                                
+                                    row.col(|ui| {
+                                        ui.label(lift.reps.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(lift.weight.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&lift.lift);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&lift.time.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(lift.rpe.to_string());
+                                    });
 
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
+                                
+                            });
+                        }
+                    });
+            if ui.button(format!("Refresh")).clicked() {
+                get_lifts(self.tx.clone(), ctx.clone());
+            }
             egui::warn_if_debug_build(ui);
         });
 
