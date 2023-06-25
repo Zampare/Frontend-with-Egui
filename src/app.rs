@@ -5,14 +5,17 @@ use std::sync::mpsc::{Receiver, Sender};
 use egui_extras::{TableBuilder, Column};
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
+
 pub struct TemplateApp {
-    // Example stuff:
     #[serde(skip)]
     tx: Sender<Vec<Lift>>,
     #[serde(skip)]
     rx: Receiver<Vec<Lift>>,
     label: String,
     lifts: Vec<Lift>,
+    submitlift_open: bool,
+    newLift: NewLift,
+    liftType: LiftType,
 }
 
 #[derive(serde::Deserialize,serde::Serialize, Debug, Clone, PartialEq)]
@@ -25,6 +28,20 @@ struct Lift{
     time:chrono::DateTime<chrono::Utc>
 }
 
+#[derive(serde::Serialize,serde::Deserialize, Default, Debug)]
+struct NewLift{
+    pub lift: String,
+    pub weight:i32,
+    pub reps:i32,
+    pub rpe:i32,
+    pub time:chrono::DateTime<chrono::Utc>
+}
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+enum LiftType {
+    Bench,
+    Squat,
+    Deadlift,
+}
 
 impl Default for TemplateApp {
     fn default() -> Self {
@@ -35,8 +52,77 @@ impl Default for TemplateApp {
             rx,
             lifts: Vec::new(),
             label: "Hello World!".to_owned(),
+            submitlift_open : false,
+            newLift:NewLift { lift: ("Bench".to_string()), ..Default::default()},
+            liftType: LiftType::Bench,
         }
     }
+}
+
+fn get_lifts(tx: Sender<Vec<Lift>>, ctx: egui::Context){
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move{
+        let body: Vec<Lift> = Client::default()
+            .get("/api/workout/lifts")
+            .send()
+            .await
+            .expect("Unable to send request")
+            .json()
+            .await
+            .expect("Unable to parse response");
+
+        let _ = tx.send(body);
+        ctx.request_repaint();
+    });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(async move {
+        let url = "http://192.168.1.38:8080/api/workout/lifts";
+        let body: Vec<Lift> = Client::default()
+            .get(url)
+            .send()
+            .await
+            .expect("Unable to send request")
+            .json()
+            .await
+            .expect("Unable to parse response");
+
+        let _ = tx.send(body);
+        ctx.request_repaint();
+    });
+}
+
+fn write_lift(form_data: NewLift){
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move{
+        let url = "/api/workout/lifts";
+        let json = serde_json::to_string(&form_data).unwrap();
+        let _writtenlift:Lift = Client::default()
+            .post(url)
+            .header("Content-Type", "application/json")
+            .body(json)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(async move {
+        let url = "http://192.168.1.38:8080/api/workout/lifts";
+        let json = serde_json::to_string(&form_data).unwrap();
+        let _writtenlift:Lift = Client::default()
+            .post(url)
+            .header("Content-Type", "application/json")
+            .body(json)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    });
 }
 
 impl TemplateApp {
@@ -55,39 +141,7 @@ impl TemplateApp {
     }
 }
 
-fn get_lifts(tx: Sender<Vec<Lift>>, ctx: egui::Context){
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_futures::spawn_local(async move{
-        let body: Vec<Lift> = Client::default()
-            .get("http://192.168.1.38:8080/api/workout/lifts")
-            .send()
-            .await
-            .expect("Unable to send request")
-            .json()
-            .await
-            .expect("Unable to parse response");
 
-        // After parsing the response, notify the GUI thread of the increment value.
-        let _ = tx.send(body);
-        ctx.request_repaint();
-    });
-
-    #[cfg(not(target_arch = "wasm32"))]
-    tokio::spawn(async move {
-        let body: Vec<Lift> = Client::default()
-            .get("http://192.168.1.38:8080/api/workout/lifts")
-            .send()
-            .await
-            .expect("Unable to send request")
-            .json()
-            .await
-            .expect("Unable to parse response");
-
-        // After parsing the response, notify the GUI thread of the increment value.
-        let _ = tx.send(body);
-        ctx.request_repaint();
-    });
-}
 
 
 impl eframe::App for TemplateApp {
@@ -102,27 +156,95 @@ impl eframe::App for TemplateApp {
         if let Ok(lifts) = self.rx.try_recv() {
             self.lifts = lifts;
         }
+        let Self {
+            // Example stuff:
+            tx,
+            rx,
+            lifts,
+            label,
+            submitlift_open,
+            newLift,
+            liftType
+        } = self;
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
-        #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
+         // no File->Quit on web pages!
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Quit").clicked() {
                         _frame.close();
                     }
+                    
                 });
             });
+            
         });
-
+        egui::SidePanel::left("side_panel").show(ctx, |ui| {
+            ui.heading("Side Panel");
+            if ui.button("Submit Lift").clicked() {
+                self.submitlift_open = !self.submitlift_open;
+            }
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
-           
+                ui.horizontal(|ui| {
+                    if ui.button(format!("Refresh")).clicked() {
+                        get_lifts(self.tx.clone(), ctx.clone());
+                    }
+                });
+                if self.submitlift_open {
+                    egui::Window::new("New Lift")
+                        .auto_sized()
+                        .show(ctx, |ui| {
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Lift Type:");
+                                ui.selectable_value(liftType, LiftType::Bench, "Bench");
+                                ui.selectable_value(liftType, LiftType::Squat, "Squat");
+                                ui.selectable_value(liftType, LiftType::Deadlift, "Deadlift");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Weight:");
+                                ui.add(egui::DragValue::new(&mut self.newLift.weight).speed(1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Reps:");
+                                ui.add(egui::DragValue::new(&mut self.newLift.reps).speed(1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("RPE:");
+                                ui.add(egui::Slider::new(&mut self.newLift.rpe, 0..=10).integer());
+                            });
+                        // Submit button in the pop-up
+                            if ui.button("Submit").clicked() {
+                                // Call your function here
+                                match liftType{
+                                    LiftType::Bench => self.newLift.lift = "Bench".to_owned(),
+                                    LiftType::Squat => self.newLift.lift = "Squat".to_owned(),
+                                    LiftType::Deadlift => self.newLift.lift = "Deadlift".to_owned(),
+                                };
+                                let submit_lift = NewLift{
+                                    lift: self.newLift.lift.clone(),
+                                    weight: self.newLift.weight,
+                                    reps: self.newLift.reps,
+                                    rpe: self.newLift.rpe,
+                                    time: chrono::offset::Utc::now(),
+                                };
+                                write_lift(submit_lift);
+                                self.submitlift_open = false; // Close the pop-up
+                            }
+                    });
+                }
                 TableBuilder::new(ui)
-                    .columns(Column::remainder(),5)
+                    .columns(Column::auto(),5)
+                    .auto_shrink([true, true])
+                    .resizable(true)
+                    .striped(true)
                     .header(20.0, |mut header| {
                         header.col(|ui| {
                             ui.heading("Reps");
@@ -164,19 +286,8 @@ impl eframe::App for TemplateApp {
                             });
                         }
                     });
-            if ui.button(format!("Refresh")).clicked() {
-                get_lifts(self.tx.clone(), ctx.clone());
-            }
-            egui::warn_if_debug_build(ui);
+                    
         });
-
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
+        
     }
 }
