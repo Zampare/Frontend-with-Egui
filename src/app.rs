@@ -3,6 +3,8 @@
 use reqwest::{Client};
 use std::sync::mpsc::{Receiver, Sender};
 use egui_extras::{TableBuilder, Column};
+#[cfg(target_arch = "wasm32")]
+use web_sys::{Window};
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 
@@ -62,8 +64,9 @@ impl Default for TemplateApp {
 fn get_lifts(tx: Sender<Vec<Lift>>, ctx: egui::Context){
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(async move{
+        let url = web_sys::window().unwrap().location().origin().unwrap() + "/api/workout/lifts";
         let body: Vec<Lift> = Client::default()
-            .get("/api/workout/lifts")
+            .get(url)
             .send()
             .await
             .expect("Unable to send request")
@@ -95,7 +98,7 @@ fn get_lifts(tx: Sender<Vec<Lift>>, ctx: egui::Context){
 fn write_lift(form_data: NewLift){
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(async move{
-        let url = "/api/workout/lifts";
+        let url = web_sys::window().unwrap().location().origin().unwrap() + "/api/workout/lifts";
         let json = serde_json::to_string(&form_data).unwrap();
         let _writtenlift:Lift = Client::default()
             .post(url)
