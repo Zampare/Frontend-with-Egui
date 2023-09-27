@@ -103,6 +103,7 @@ fn write_lift(form_data: NewLift){
         let _writtenlift:Lift = Client::default()
             .post(url)
             .header("Content-Type", "application/json")
+            .header("METHOD", "POST")
             .body(json)
             .send()
             .await
@@ -115,9 +116,11 @@ fn write_lift(form_data: NewLift){
     tokio::spawn(async move {
         let url = "http://192.168.1.38:8080/api/workout/lifts";
         let json = serde_json::to_string(&form_data).unwrap();
+        println!("{:?}",json);
         let _writtenlift:Lift = Client::default()
             .post(url)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json",)
+            .header("METHOD", "POST")
             .body(json)
             .send()
             .await
